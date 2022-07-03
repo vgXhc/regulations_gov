@@ -1,0 +1,156 @@
+---
+title: "Scraping comments from regulations.gov"
+author: "Harald Kliems"
+date: "3/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+For a research project, we need to scrape comments submitted to the Environmental Protection Agency on a proposed rule. The comments are posted on [regulations.gov](https://www.regulations.gov/document/EPA-HQ-OA-2018-0259-9322/comment).
+
+Documentation for the regulations.gov is available [here](https://open.gsa.gov/api/regulationsgov/). An API key can be requested [here](https://api.data.gov/signup/). Make sure to save the API key in your `renviron`.
+
+```{r}
+library(jsonlite)
+library(httr)
+library(tidyverse)
+
+api_key <- Sys.getenv("regulations_gov_key")
+
+
+
+
+
+```
+
+We use the `httr` package to retrieve summary information for the docket ID:
+
+```{r}
+df <- GET(url = paste0("https://api.regulations.gov/v4/documents?filter[docketId]=EPA-HQ-OA-2018-0259&api_key=", api_key))
+```
+
+With `jsonlite` we can parse the response and identify the object IDs for proposed rule:
+
+```{r}
+
+df2 <- fromJSON(rawToChar(df$content))
+
+df2$data$attributes %>% 
+  filter(documentType == "Proposed Rule")
+```
+
+We can see that the docket includes two proposed rules, the original one from 2018, and a supplemental Notice from 2020. Now the objectIDs allow retrieval of comments through the comments endpoint of the API
+
+```{r}
+df2$data$attributes %>% 
+  filter(documentType == "Proposed Rule") %>% 
+  pull()
+
+comments <- GET(paste0("https://api.regulations.gov/v4/comments?filter[commentOnId]=090000648320bc9e&api_key=", api_key))
+
+
+df <- GET(paste0("https://api.regulations.gov/v4/comments?filter[commentOnId]=090000648320bc9e&page[size]=250&page[number]=1&sort=lastModifiedDate,documentId&api_key=", api_key))
+
+https://api.regulations.gov/v4/comments?filter[commentOnId]=09000064846eebaf&page[size]=250&page[number]=1&sort=lastModifiedDate,documentId&api_key=DEMO_KEY
+
+comments <- fromJSON(rawToChar(comments$content))
+
+view(comments$data)
+```
+
+We can only retrieve 250 comments at a time. So we build a function that takes a numeric argument for `page[number]` argument in the API call and returns the data component:
+```{r}
+retrieve_comment_ids <- function(page, last_mod = ""){
+  if_else(last_mod == "",
+  url <- paste0("https://api.regulations.gov/v4/comments?filter[commentOnId]=090000648320bc9e&page[size]=250&page[number]=",
+                page,
+                "&sort=lastModifiedDate,documentId&api_key=",  api_key),
+  url <- paste0("https://api.regulations.gov/v4/comments?filter[commentOnId]=090000648320bc9e&",
+                "filter[lastModifiedDate][ge]=",
+                last_mod,
+                "page[size]=250&page[number]=",
+                page,
+                "&sort=lastModifiedDate,documentId&api_key=", api_key)
+  )
+  comments <- GET(url)
+  comments <- fromJSON(rawToChar(comments$content))
+
+comments$data
+}
+
+retrieve_comment_ids <- function(page, last_mod = NA){
+ 
+  url <- paste0("https://api.regulations.gov/v4/comments?filter[commentOnId]=090000648320bc9e&page[size]=250&page[number]=",
+                page,
+                "&sort=lastModifiedDate,documentId&api_key=", api_key)
+  
+  comments <- GET(url)
+  comments <- fromJSON(rawToChar(comments$content))
+
+comments$data
+}
+```
+Then we can use `map_df` to go through 250 comments at a time. The total number of comments is available in the `$meta$totalElements`. In addition to the limitation of only getting 250 comments at a time, the API also has a rate limit of 1000 requests per hour. Finally, there is a limit of retrieving only 5000 comments by paging through. All of this requires another function.
+
+
+https://api.regulations.gov/v4/comments?filter[commentOnId]=09000064846eebaf&filter[lastModifiedDate][ge]=2020-08-10 11:58:52&page[size]=250&page[number]=N&sort=lastModifiedDate,documentId&api_key=DEMO_KEY
+
+```{r}
+retrieve_all_comment_ids <- function(n){
+  # retrieve number of comments
+  df <- GET(paste0("https://api.regulations.gov/v4/comments?filter[commentOnId]=090000648320bc9e&api_key=", api_key))
+  df2 <- fromJSON(rawToChar(df$content))
+  n_comments <- df2$meta$totalElements
+  n_pages <- as.integer(n_comments/250)
+  
+  if_else(n_comments <= 5000,
+          retrieve_comment_ids(1:n_pages),
+          
+    
+  )
+}
+
+pages <- comments
+
+comment_ids <- map_df(1:37, retrieve_comment_ids)
+
+```
+
+
+
+Let's get a single comment:
+
+```{r}
+comments$data
+GET(paste0(comments$data$links$self[1], "?api_key=", api_key))
+
+df <- GET(paste0("https://api.regulations.gov/v4/comments/EPA-HQ-OA-2018-0259-6884?include=attachments&api_key=", api_key))
+
+single_comment <-  fromJSON(rawToChar(df$content))
+
+single_comment$included$attributes$fileFormats$
+
+attachment <- GET(paste0(single_comment$included$links, "?api_key=", api_key))
+
+comments <- fromJSON(rawToChar(attachment$content))
+```
+
+To get the link to an attachment file, you have to go deep into the JSON structure:
+
+```{r}
+download.file(single_comment$included$attributes$fileFormats[[1]]$fileUrl, destfile = "attachments/test.pdf", mode = "wb")
+```
+
+```{r}
+library(pdftools)
+pdf_text("attachments/test.pdf")
+```
+
+# Questions
+- Can there be more than one attachment?
+- Are all attachments OCR'd?
